@@ -4,29 +4,30 @@ from pydantic import BaseModel
 from google import genai
 import os
 
-app = FastAPI(title="Tejasvin AI Backend", version="1.0.0")
+app = FastAPI(title="Tejasvin AI Backend", version="2.0.0")
 
-# ✅ CORS - Allow tejasvin.in to call this backend
+# ✅ CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://tejasvin.in",
         "https://www.tejasvin.in",
-        "http://localhost",         # for local testing
+        "http://localhost",
         "http://127.0.0.1",
-        "http://localhost:5500",    # VS Code Live Server
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
-# ✅ Google AI client (uses GOOGLE_API_KEY env variable)
+# ✅ Google AI client
 client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 
+
 # ─────────────────────────────────────────────
-# Request model - matches your Firestore fields
-# Add/remove fields based on your product schema
+# Request model
 # ─────────────────────────────────────────────
 class ProductData(BaseModel):
     name: str
@@ -37,10 +38,11 @@ class ProductData(BaseModel):
     sizes: list[str] | None = None
     color: str | None = None
     stock: str | None = None
+    question: str | None = None   # ← Customer's actual question (if any)
 
 
 # ─────────────────────────────────────────────
-# Health check endpoint
+# Health check
 # ─────────────────────────────────────────────
 @app.get("/")
 def root():
@@ -48,78 +50,94 @@ def root():
 
 
 # ─────────────────────────────────────────────
-# Main endpoint - explain a product using Gemma 4
+# Helper: call AI with model fallback chain
+# ─────────────────────────────────────────────
+def call_ai(prompt: str) -> str:
+    model_names = [
+        "gemma-4-27b-it",    # Gemma 4 27B
+        "gemma-4-26b-it",    # Gemma 4 26B MoE
+        "gemma-4-31b-it",    # Gemma 4 31B Dense
+        "gemma-3-27b-it",    # Gemma 3 — always works
+        "gemini-2.0-flash",  # Gemini safety net
+    ]
+    last_error = None
+    for model_name in model_names:
+        try:
+            response = client.models.generate_content(model=model_name, contents=prompt)
+            return response.text.strip()
+        except Exception as e:
+            last_error = e
+            continue
+    raise last_error
+
+
+# ─────────────────────────────────────────────
+# Main endpoint
 # ─────────────────────────────────────────────
 @app.post("/explain-product")
 async def explain_product(product: ProductData):
     try:
-        # Build product info string from Firestore data
+        # Build product context block
         product_info = f"Product Name: {product.name}\n"
         product_info += f"Price: ₹{product.price}\n"
         product_info += f"Description: {product.description}\n"
-
-        if product.category:
-            product_info += f"Category: {product.category}\n"
         if product.fabric:
             product_info += f"Fabric: {product.fabric}\n"
-        if product.color:
-            product_info += f"Color: {product.color}\n"
         if product.sizes:
             product_info += f"Available Sizes: {', '.join(product.sizes)}\n"
         if product.stock:
-            product_info += f"Stock: {product.stock}\n"
+            product_info += f"Stock Status: {product.stock}\n"
+        if product.category:
+            product_info += f"Category: {product.category}\n"
 
-        # Gemma 4 prompt
-        prompt = f"""You are a friendly and enthusiastic fashion assistant for Tejasvin — a cultural Indian streetwear brand that blends traditional Indian culture with modern street style.
+        # ── MODE 1: Customer asked a specific question ──────────────────────────
+        if product.question and product.question.strip():
+            prompt = f"""You are a knowledgeable and friendly shopping assistant for Tejasvin — a premium Indian cultural streetwear brand.
 
-A customer is viewing a product and wants to understand it better. Read the product details below and explain it to them in a warm, exciting, and conversational way. 
+A customer is asking a specific question about a product. Your job is to DIRECTLY ANSWER their question using the product details below.
 
-Rules:
-- Keep it to 3-4 sentences maximum
-- Highlight what makes the product unique or special
-- Mention the price naturally
-- Sound like a helpful friend, not a robot
-- Do NOT use bullet points, just natural flowing text
+CRITICAL RULES:
+- Answer ONLY what they asked. Do NOT re-describe the whole product.
+- Be specific and helpful. If they ask about sizes, tell them the sizes. If they ask about fit, explain the fit.
+- Keep it to 2-3 sentences maximum.
+- Sound like a helpful friend texting them, not a sales robot.
+- Do NOT start with "You're going to love..." or any sales pitch opener.
 
 Product Details:
 {product_info}
 
-Give a natural explanation that would make someone excited to buy it."""
+Customer's Question: {product.question.strip()}
 
-        # Call Google AI — try Gemma 4 variants, fall back to Gemma 3 / Gemini if not available
-        # Gemma 4 released April 3 2026 — model IDs still stabilising across regions
-        model_names = [
-            "gemma-4-27b-it",        # Gemma 4 27B (original attempt)
-            "gemma-4-26b-it",        # Gemma 4 26B MoE
-            "gemma-4-31b-it",        # Gemma 4 31B Dense
-            "gemma-3-27b-it",        # Gemma 3 fallback — always works
-            "gemini-2.0-flash",      # Gemini safety net
-        ]
+Answer their question directly:"""
 
-        response = None
-        last_error = None
-        for model_name in model_names:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                )
-                break  # Success — stop trying
-            except Exception as model_err:
-                last_error = model_err
-                continue  # Try next model
+        # ── MODE 2: First open — give an exciting intro explanation ────────────
+        else:
+            prompt = f"""You are a friendly and enthusiastic fashion assistant for Tejasvin — a cultural Indian streetwear brand blending Ancient Bharat's legacy with modern street style.
 
-        if response is None:
-            raise last_error  # All models failed
+A customer just opened the product page. Give them a warm, exciting 2-3 sentence introduction to this product. Make them feel interested and excited.
+
+Rules:
+- Keep it to 2-3 sentences only
+- Mention price and 1-2 standout features
+- Sound like a knowledgeable friend, not a salesperson
+- End with a soft invitation like "Ask me anything!" or "What would you like to know?"
+- Do NOT use bullet points
+
+Product Details:
+{product_info}
+
+Give the intro:"""
+
+        result = call_ai(prompt)
 
         return {
             "success": True,
-            "explanation": response.text.strip(),
+            "explanation": result,
             "product": product.name
         }
 
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Gemma 4 error: {str(e)}"
+            detail=f"AI error: {str(e)}"
         )
