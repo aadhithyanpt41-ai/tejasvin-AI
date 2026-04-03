@@ -86,15 +86,31 @@ Product Details:
 
 Give a natural explanation that would make someone excited to buy it."""
 
-        # Call Gemma 4 via Google AI Studio API
-        # ⚠️ NOTE: Gemma 4 was just released on April 3 2026.
-        # Check https://aistudio.google.com/ for the exact model ID.
-        # Likely: "gemma-4-27b-it" or "gemma-4-31b-it"
-        # If it fails, fallback to "gemma-3-27b-it" temporarily.
-        response = client.models.generate_content(
-            model="gemma-4-27b-it",   # ← Update this if needed after checking AI Studio
-            contents=prompt,
-        )
+        # Call Google AI — try Gemma 4 variants, fall back to Gemma 3 / Gemini if not available
+        # Gemma 4 released April 3 2026 — model IDs still stabilising across regions
+        model_names = [
+            "gemma-4-27b-it",        # Gemma 4 27B (original attempt)
+            "gemma-4-26b-it",        # Gemma 4 26B MoE
+            "gemma-4-31b-it",        # Gemma 4 31B Dense
+            "gemma-3-27b-it",        # Gemma 3 fallback — always works
+            "gemini-2.0-flash",      # Gemini safety net
+        ]
+
+        response = None
+        last_error = None
+        for model_name in model_names:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
+                break  # Success — stop trying
+            except Exception as model_err:
+                last_error = model_err
+                continue  # Try next model
+
+        if response is None:
+            raise last_error  # All models failed
 
         return {
             "success": True,
