@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
 import os
+import json
+import re
 
 app = FastAPI(title="Tejasvin AI Backend", version="2.0.0")
 
@@ -27,8 +29,23 @@ client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 
 
 # ─────────────────────────────────────────────
-# Request model
+# Request models
 # ─────────────────────────────────────────────
+class ProductCatalogItem(BaseModel):
+    id: str
+    name: str
+    price: float
+    originalPrice: float | None = None
+    href: str | None = None
+    images: list[str] | None = None
+    img1: str | None = None
+    img2: str | None = None
+    description: str | None = None
+    sizes: str | None = None
+    stock: int | None = None
+    badge: str | None = None
+
+
 class ProductData(BaseModel):
     name: str
     price: str
@@ -39,6 +56,32 @@ class ProductData(BaseModel):
     color: str | None = None
     stock: str | None = None
     question: str | None = None   # ← Customer's actual question (if any)
+    catalog: list[ProductCatalogItem] | None = None
+    current_product_id: str | None = None
+
+
+# ─────────────────────────────────────────────
+# Helper: Parse agent response
+# ─────────────────────────────────────────────
+def parse_agent_response(response_text: str) -> dict:
+    # Try to find a JSON block in the text
+    json_match = re.search(r"({.*})", response_text, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(1))
+        except Exception:
+            pass
+    try:
+        return json.loads(response_text)
+    except Exception:
+        # Fallback if LLM output is not valid JSON
+        # Clean up text for description
+        clean_text = response_text.replace('"', '\\"').replace('\n', ' ')
+        return {
+            "thoughts": "Agent collaboration completed.",
+            "explanation": clean_text,
+            "matched_products": []
+        }
 
 
 # ─────────────────────────────────────────────
@@ -77,6 +120,14 @@ def call_ai(prompt: str) -> str:
 @app.post("/explain-product")
 async def explain_product(product: ProductData):
     try:
+        # Build catalog details block
+        catalog_details = ""
+        if product.catalog:
+            for item in product.catalog:
+                catalog_details += f"- ID: {item.id} | Name: {item.name} | Price: ₹{item.price} | Stock: {item.stock} | Sizes: {item.sizes or 'S, M, L, XL'} | Description: {item.description or ''}\n"
+        else:
+            catalog_details = "No other products in catalog."
+
         # Build product context block
         product_info = f"Product Name: {product.name}\n"
         product_info += f"Price: ₹{product.price}\n"
@@ -90,49 +141,45 @@ async def explain_product(product: ProductData):
         if product.category:
             product_info += f"Category: {product.category}\n"
 
-        # ── MODE 1: Customer asked a specific question ──────────────────────────
-        if product.question and product.question.strip():
-            prompt = f"""You are a knowledgeable and friendly shopping assistant for Tejasvin — a premium Indian cultural streetwear brand.
+        prompt = f"""You are the orchestrator of a Multi-Agent AI shopping assistant for Tejasvin, a premium Indian cultural streetwear brand.
 
-A customer is asking a specific question about a product. Your job is to DIRECTLY ANSWER their question using the product details below.
+The system consists of three specialized agents working together:
+1. Classifier Agent: Analyzes the customer's question and current context.
+2. Product Retrieval Agent: Scans the product catalog (supplied below) to find exact matches or recommendations.
+3. Advisor Agent: Formulates a friendly, conversational response incorporating matching products.
 
-CRITICAL RULES:
-- Answer ONLY what they asked. Do NOT re-describe the whole product.
-- Be specific and helpful. If they ask about sizes, tell them the sizes. If they ask about fit, explain the fit.
-- Keep it to 2-3 sentences maximum.
-- Sound like a helpful friend texting them, not a sales robot.
-- Do NOT start with "You're going to love..." or any sales pitch opener.
-
-Product Details:
+Here is the current product being viewed by the customer:
 {product_info}
 
-Customer's Question: {product.question.strip()}
+Here is the full catalog of products available in the store:
+{catalog_details}
 
-Answer their question directly:"""
+Customer's Question: {product.question.strip() if (product.question and product.question.strip()) else "Give me a welcome introduction to this product!"}
 
-        # ── MODE 2: First open — give an exciting intro explanation ────────────
-        else:
-            prompt = f"""You are a friendly and enthusiastic fashion assistant for Tejasvin — a cultural Indian streetwear brand blending Ancient Bharat's legacy with modern street style.
+You MUST execute the collaboration between these agents and respond strictly in JSON format.
+In your JSON, you must include:
+- thoughts: A detailed breakdown of the multiagent collaboration (e.g. "Agent 1 (Classifier): User is asking for other tees. Agent 2 (Searcher): Scanned catalog, found Bheeman and Krishna tees. Agent 3 (Advisor): Formulating recommendation...").
+- explanation: A friendly, enthusiastic 2-3 sentence answer/recommendation to the user.
+- matched_products: A list of string product IDs (must match the exact 'id' from the catalog) that are mentioned in the response or are relevant. If no products are relevant, return an empty list [].
 
-A customer just opened the product page. Give them a warm, exciting 2-3 sentence introduction to this product. Make them feel interested and excited.
+Strict JSON Output format:
+{{
+  \"thoughts\": \"string detailing the multiagent workflow logs\",
+  \"explanation\": \"string response\",
+  \"matched_products\": [\"id1\", \"id2\"]
+}}
 
-Rules:
-- Keep it to 2-3 sentences only
-- Mention price and 1-2 standout features
-- Sound like a knowledgeable friend, not a salesperson
-- End with a soft invitation like "Ask me anything!" or "What would you like to know?"
-- Do NOT use bullet points
+Output ONLY valid JSON. Do not include any markdown wrappers or introductory text.
+"""
 
-Product Details:
-{product_info}
-
-Give the intro:"""
-
-        result = call_ai(prompt)
+        result_text = call_ai(prompt)
+        parsed = parse_agent_response(result_text)
 
         return {
             "success": True,
-            "explanation": result,
+            "thoughts": parsed.get("thoughts", "Agent collaboration completed."),
+            "explanation": parsed.get("explanation", result_text),
+            "matched_products": parsed.get("matched_products", []),
             "product": product.name
         }
 
@@ -141,3 +188,4 @@ Give the intro:"""
             status_code=500,
             detail=f"AI error: {str(e)}"
         )
+
