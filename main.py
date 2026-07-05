@@ -28,7 +28,8 @@ app.add_middleware(
 )
 
 # ✅ Google AI client
-client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+api_key = os.environ.get("GOOGLE_API_KEY")
+client = genai.Client(api_key=api_key) if api_key else None
 
 
 # ─────────────────────────────────────────────
@@ -71,6 +72,9 @@ class ProductExplainRequest(BaseModel):
     current_product: ProductData | None = None
     catalog: list[CatalogProduct] | None = None
     username: str | None = None
+    ai_name: str | None = None
+    ai_style: str | None = None
+    ai_bio: str | None = None
 
 
 # ─────────────────────────────────────────────
@@ -78,13 +82,25 @@ class ProductExplainRequest(BaseModel):
 # ─────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"status": "✅ Tejasvin AI Backend is running!", "model": "Gemma 4 Multi-Agent"}
+    return {"status": "✅ Tejasvin AI Backend is running!", "model": "Gemma 4 Multi-Agent", "online": client is not None}
 
 
 # ─────────────────────────────────────────────
 # Helper: call AI with model fallback chain
 # ─────────────────────────────────────────────
-def call_ai(prompt: str) -> str:
+def call_ai(prompt: str, req_catalog: list = [], current_product_id: str | None = None) -> str:
+    if not client:
+        # Determine recommended IDs for dry-run offline testing
+        rec_ids = [current_product_id] if current_product_id else []
+        if not rec_ids and req_catalog:
+            rec_ids = [req_catalog[0].id]
+        return json.dumps({
+            "search_agent_thoughts": f"🔍 Search Agent: [DRY-RUN] Scanned catalog of {len(req_catalog)} products. Recommended ID: {rec_ids[0] if rec_ids else 'None'}",
+            "stylist_agent_thoughts": f"🎨 Stylist Agent: [DRY-RUN] Style review: perfect 240 GSM bio-washed cotton, ancient Indian streetwear theme.",
+            "coordinator_response": "✦ Tejasvin: Namaste! The local AI is running in offline dry-run mode (no GOOGLE_API_KEY set). Set the environment variable to query the live Gemini/Gemma models.",
+            "recommended_product_ids": rec_ids
+        })
+
     model_names = [
         "gemma-4-27b-it",    # Gemma 4 27B
         "gemma-4-26b-it",    # Gemma 4 26B MoE
@@ -193,6 +209,18 @@ async def explain_product(req: ProductExplainRequest):
         if req_current.category:
             current_product_info += f"Category: {req_current.category}\n"
 
+        # Personalization profile extraction
+        personalization_context = ""
+        ai_persona_name = req.ai_name or "Tejasvin"
+        
+        if req.ai_style or req.ai_bio:
+            personalization_context = "\nPERSONALIZATION PROFILE:\n"
+            if req.ai_style:
+                personalization_context += f"- Customer Style Preference: {req.ai_style}\n"
+            if req.ai_bio:
+                personalization_context += f"- Customer Bio & Preferences: {req.ai_bio}\n"
+            personalization_context += f"You MUST align all styling thoughts and coordinator recommendations specifically to match this customer's style profile and preferences.\n"
+
         # ── MODE 1: Customer asked a specific question ──────────────────────────
         if req_question and req_question.strip():
             prompt = f"""You are a multi-agent AI system for Tejasvin, a premium Indian cultural streetwear brand blending Ancient Bharat's legacy with modern street style.
@@ -201,9 +229,11 @@ The team consists of:
 2. StylistAgent: Evaluates styling, fit, and cultural design, providing a personalized style recommendation.
 3. CoordinatorAgent: Synthesizes the response to directly answer the customer's question.
 
+Your CoordinatorAgent identity name is "{ai_persona_name}". You MUST speak under this name.
+
 Customer Name: {req_username or 'Customer'}
 Customer's Query: "{req_question.strip()}"
-
+{personalization_context}
 Current Product details:
 {current_product_info}
 
@@ -215,7 +245,7 @@ You MUST respond with a JSON object in this exact format (do not output any othe
 {{
   "search_agent_thoughts": "🔍 Search Agent: [Describe what catalog search matches you found, or if you recommended the current product]",
   "stylist_agent_thoughts": "🎨 Stylist Agent: [Provide styling advice tailored to {req_username or 'the customer'}'s request, detailing fit, fabric, and cultural street vibe]",
-  "coordinator_response": "✦ Tejasvin: [Your final warm, friendly 2-3 sentence answer directly to the customer]",
+  "coordinator_response": "✦ {ai_persona_name}: [Your final warm, friendly 2-3 sentence answer directly to the customer]",
   "recommended_product_ids": [A list of product IDs (strings) from the catalog or current product that match this recommendation. For example, if the current product matches, include its ID. If a catalog item matches, include its ID. Do not return more than 3 IDs.]
 }}
 
@@ -230,9 +260,11 @@ The team consists of:
 2. StylistAgent: Evaluates styling, fit, and cultural design.
 3. CoordinatorAgent: Synthesizes a warm introduction for the customer.
 
+Your CoordinatorAgent identity name is "{ai_persona_name}". You MUST speak under this name.
+
 Customer Name: {req_username or 'Customer'}
 The customer just opened the product page for "{req_current.name}". Give them a warm, exciting introduction.
-
+{personalization_context}
 Current Product details:
 {current_product_info}
 
@@ -244,14 +276,14 @@ You MUST respond with a JSON object in this exact format (do not output any othe
 {{
   "search_agent_thoughts": "🔍 Search Agent: [Explain why this specific product is in focus and matches the catalog style]",
   "stylist_agent_thoughts": "🎨 Stylist Agent: [Highlight the premium feel, fabric, fit, and cultural style story of this product for {req_username or 'the customer'}]",
-  "coordinator_response": "✦ Tejasvin: [A welcoming, exciting 2-3 sentence intro to this product, ending with a friendly invitation to ask anything]",
+  "coordinator_response": "✦ {ai_persona_name}: [A welcoming, exciting 2-3 sentence intro to this product, ending with a friendly invitation to ask anything]",
   "recommended_product_ids": [A list containing the current product's ID if available. e.g., ["{current_product_id or ''}"]]
 }}
 
 Ensure all JSON keys and values are correctly escaped. Remember to write from the perspective of a high-end cultural brand.
 """
 
-        result = call_ai(prompt)
+        result = call_ai(prompt, req_catalog, current_product_id)
         parsed = parse_agent_response(result, current_product_id)
 
         return {
