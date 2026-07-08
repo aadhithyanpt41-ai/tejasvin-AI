@@ -5,6 +5,7 @@ from google import genai
 import os
 import json
 import re
+import base64
 
 app = FastAPI(title="Tejasvin AI Backend", version="2.0.0")
 
@@ -75,7 +76,7 @@ class ProductExplainRequest(BaseModel):
     ai_name: str | None = None
     ai_style: str | None = None
     ai_bio: str | None = None
-
+    image_base64: str | None = None
 
 # ─────────────────────────────────────────────
 # Health check
@@ -88,7 +89,7 @@ def root():
 # ─────────────────────────────────────────────
 # Helper: call AI with model fallback chain
 # ─────────────────────────────────────────────
-def call_ai(prompt: str, req_catalog: list = [], current_product_id: str | None = None) -> str:
+def call_ai(prompt: str, req_catalog: list = [], current_product_id: str | None = None, image_b64: str | None = None) -> str:
     if not client:
         # Determine recommended IDs for dry-run offline testing
         rec_ids = [current_product_id] if current_product_id else []
@@ -109,9 +110,29 @@ def call_ai(prompt: str, req_catalog: list = [], current_product_id: str | None 
         "gemini-2.0-flash",  # Gemini safety net
     ]
     last_error = None
+    
+    contents = [prompt]
+    if image_b64:
+        # Expected format: data:image/jpeg;base64,...
+        if "," in image_b64:
+            header, b64_data = image_b64.split(",", 1)
+            mime_type = header.split(":")[1].split(";")[0]
+        else:
+            b64_data = image_b64
+            mime_type = "image/jpeg"
+        
+        try:
+            image_bytes = base64.b64decode(b64_data)
+            contents.append({
+                "mime_type": mime_type,
+                "data": image_bytes
+            })
+        except Exception as e:
+            print(f"Failed to decode image: {e}")
+
     for model_name in model_names:
         try:
-            response = client.models.generate_content(model=model_name, contents=prompt)
+            response = client.models.generate_content(model=model_name, contents=contents)
             if response.text:
                 return response.text.strip()
         except Exception as e:
@@ -232,7 +253,7 @@ The team consists of:
 Your CoordinatorAgent identity name is "{ai_persona_name}". You MUST speak under this name.
 
 Customer Name: {req_username or 'Customer'}
-Customer's Query: "{req_question.strip()}"
+Customer's Query: "{req_question.strip() if req_question else 'Analyze this image.'}"
 {personalization_context}
 Current Product details:
 {current_product_info}
@@ -283,7 +304,7 @@ You MUST respond with a JSON object in this exact format (do not output any othe
 Ensure all JSON keys and values are correctly escaped. Remember to write from the perspective of a high-end cultural brand.
 """
 
-        result = call_ai(prompt, req_catalog, current_product_id)
+        result = call_ai(prompt, req_catalog, current_product_id, req.image_base64)
         parsed = parse_agent_response(result, current_product_id)
 
         return {
