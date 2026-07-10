@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
+from google.genai import types
 import os
 import json
 import re
@@ -123,10 +124,12 @@ def call_ai(prompt: str, req_catalog: list = [], current_product_id: str | None 
         
         try:
             image_bytes = base64.b64decode(b64_data)
-            contents.append({
-                "mime_type": mime_type,
-                "data": image_bytes
-            })
+            contents.append(
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=mime_type
+                )
+            )
         except Exception as e:
             print(f"Failed to decode image: {e}")
 
