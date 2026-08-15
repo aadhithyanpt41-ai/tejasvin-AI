@@ -323,3 +323,51 @@ Ensure all JSON keys and values are correctly escaped. Remember to write from th
             status_code=500,
             detail=f"AI error: {str(e)}"
         )
+
+
+class OverviewRequest(BaseModel):
+    name: str
+    description: str | None = ""
+    price: str | None = "999"
+    fabric: str | None = "240 GSM Cotton"
+    category: str | None = "Indian Cultural Streetwear"
+    language: str | None = "en-IN"
+
+@app.post("/ai-overview")
+async def generate_ai_overview(req: OverviewRequest):
+    try:
+        lang = req.language or "en-IN"
+        prompt = f"""You are the AI product curator for Tejasvin, a luxury Indian cultural streetwear brand.
+Write a short, engaging 2-3 sentence overview for the product "{req.name}".
+Product Details:
+- Description: {req.description}
+- Price: ₹{req.price}
+- Fabric: {req.fabric}
+- Category: {req.category}
+- Target Language: {lang} (Output the text directly in this language if an Indian language is specified)
+
+Guidelines:
+1. Start with ✦ followed by the product name and a punchy cultural streetwear summary.
+2. Emphasize the 240 GSM bio-washed heavy cotton, luxury oversized streetwear fit, and ancient Indian legacy symbols.
+3. Keep it to 2-3 sentences max. Do NOT return markdown code blocks, just the pure concise overview text.
+"""
+        result = call_ai(prompt)
+        clean_text = result.replace('```json', '').replace('```', '').strip()
+        try:
+            parsed = json.loads(clean_text)
+            if isinstance(parsed, dict):
+                clean_text = parsed.get("coordinator_response") or parsed.get("explanation") or clean_text
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "overview": clean_text,
+            "language": lang
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI Overview error: {str(e)}"
+        )
+
